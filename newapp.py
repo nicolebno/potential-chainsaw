@@ -1,60 +1,128 @@
-import json
-import sys
+import streamlit as st
 import pandas as pd
-from datetime import datetime
-from openpyxl import Workbook
-from build_benefit_summary import build_benefit_summary
+import pdfplumber
+import subprocess
+import json
+from io import BytesIO
+from build_benefit_summary import BENEFIT_ROWS
 
-# --- Load Config ---
-with open("config.json", "r") as f:
-    config = json.load(f)
+# --- Page Setup ---
+st.set_page_config(page_title="Proposal App - Upload & Parse", layout="wide")
+st.title("📂 Proposal App: Upload & Parse Files")
 
+# Load config
+try:
+    with open("config.json", "r") as f:
+        config = json.load(f)
+except FileNotFoundError:
+    st.warning("config.json not found. Using default styles.")
+    config = {
+        "branding": {"primary_color": "#266B8E", "font": "Calibri"},
+        "formats": {"currency": "$#,##0.00", "date": "MM/DD/YYYY"},
+        "defaults": {}
+    }
+
+# Streamlit inputs for contribution modeling
+contrib_type = st.selectbox("Contribution Type", ["flat", "percent"])
+contrib_employee = st.number_input("Employer Share for Employee", min_value=0.0, value=500.0)
+contrib_dependent = st.number_input("Employer Share for Dependents", min_value=0.0, value=250.0)
+
+# Access branding values
 BRAND = config["branding"]
 FORMATS = config["formats"]
+PRIMARY_COLOR = BRAND.get("primary_color", "#266B8E")
+CURRENCY_FORMAT = FORMATS.get("currency", "$#,##0.00")
+DATE_FORMAT = FORMATS.get("date", "MM/DD/YYYY")
+FONT = BRAND.get("font", "Calibri")
 
-# --- Style Settings ---
-PRIMARY_COLOR = BRAND["primary_color"].replace("#", "")
-FONT_NAME = BRAND["font"]
-CURRENCY_FORMAT = FORMATS["currency"]
-DATE_FORMAT = FORMATS["date"]
+st.markdown(f"<style>body {{ font-family: {FONT}; }}</style>", unsafe_allow_html=True)
 
-# --- Contribution Settings from CLI ---
-contrib_type = sys.argv[1] if len(sys.argv) > 1 else "flat"
-contrib_employee = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0
-contrib_dependent = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
+# --- File Upload Slots ---
+census_file = st.file_uploader("Upload Census File (.xlsx or .csv)", type=["xlsx", "csv"])
+rate_file = st.file_uploader("Upload Current Rates (.xlsx only)", type=["xlsx"])
+renewal_rate_file = st.file_uploader("Upload Renewal Rates (.xlsx only)", type=["xlsx"])
+benefit_summary = st.file_uploader("Upload Benefit Summary (.pdf)", type=["pdf"])
 
-# --- Optional Plan Data from JSON file ---
-try:
-    with open("plans.json", "r") as f:
-        plan_data = json.load(f)
-except FileNotFoundError:
-    plan_data = []
+# --- Dynamic Plan Inputs ---
+st.subheader("🩺 Enter Plan Design Summaries")
+if "plans" not in st.session_state:
+    st.session_state.plans = []
 
-# --- Load Data ---
-census_df = pd.read_excel("uploaded_census.xlsx")
-rate_df = pd.read_excel("uploaded_rates.xlsx", header=0)
-renewal_df = pd.read_excel("uploaded_renewal_rates.xlsx", header=0)
+new_plan_name = st.text_input("Plan Name")
+plan_data = {}
+for item in BENEFIT_ROWS:
+    plan_data[item] = st.text_input(f"{item}", key=f"{item}_{new_plan_name}")
 
-# --- Basic Age Calculation ---
-renewal_date = datetime(2025, 5, 1)
-census_df['DOB'] = pd.to_datetime(census_df['DOB'], errors='coerce')
-census_df['Age at Renewal'] = census_df['DOB'].apply(
-    lambda dob: renewal_date.year - dob.year - ((renewal_date.month, renewal_date.day) < (dob.month, dob.day))
-    if pd.notnull(dob) else None
-)
+if st.button("➕ Add Plan"):
+    st.session_state.plans.append({
+        "name": new_plan_name,
+        "benefits": plan_data.copy()
+    })
+    st.experimental_rerun()
 
-# --- Workbook Setup ---
-wb = Workbook()
-ws = wb.active
-ws.title = "Financial Summary"
+if st.session_state.plans:
+    st.markdown("### ✅ Plans Added")
+    for p in st.session_state.plans:
+        st.markdown(f"- **{p['name']}**")
 
-# Placeholder summary row
-ws.append(["Plan", "Monthly Premium", "Employer Share", "Employee Share"])
-ws.append(["Sample Plan", 1200, 900, 300])
+# --- Preview Outputs ---
+def parse_census(file):
+    try:
+        if file.name.endswith(".csv"):
+            df = pd.read_csv(file)
+        else:
+            df = pd.read_excel(file)
+        return df.head()
+    except Exception as e:
+        return f"❌ Error parsing census: {e}"
 
-# --- Benefit Summary Tab ---
-benefit_ws = wb.create_sheet(title="Benefit Summary")
-build_benefit_summary(benefit_ws, plan_data)
+def parse_rate_sheet(file):
+    try:
+        df = pd.read_excel(file, header=None)
+        return df.head(10)
+    except Exception as e:
+        return f"❌ Error parsing rate sheet: {e}"
 
-# --- Save Workbook ---
-wb.save("financial_summary_output.xlsx")
+def parse_benefit_summary(file):
+    try:
+        with pdfplumber.open(file) as pdf:
+            return f"✅ Parsed PDF: {len(pdf.pages)} pages\nSample text: {pdf.pages[0].extract_text()[:200]}"
+    except Exception as e:
+        return f"❌ Error parsing PDF: {e}"
+
+if census_file:
+    st.subheader("👥 Census Preview")
+    st.write(parse_census(census_file))
+
+if rate_file:
+    st.subheader("📊 Rate Sheet Preview")
+    st.write(parse_rate_sheet(rate_file))
+
+if benefit_summary:
+    st.subheader("📄 Benefit Summary Info")
+    st.write(parse_benefit_summary(benefit_summary))
+
+# --- Trigger Workbook Generation ---
+if census_file and rate_file and renewal_rate_file and benefit_summary:
+    if st.button("🚀 Generate Proposal Workbook"):
+        try:
+            with open("plans.json", "w") as f:
+                json.dump(st.session_state.plans, f)
+
+            subprocess.run([
+                "python", "generate_workbook.py",
+                contrib_type,
+                str(contrib_employee),
+                str(contrib_dependent)
+            ], check=True)
+
+            st.success("Workbook generated successfully!")
+            with open("financial_summary_output.xlsx", "rb") as f:
+                st.download_button(
+                    "📤 Download Finished Proposal Workbook",
+                    f,
+                    file_name="Proposal.xlsx",
+                    key="proposal_download"
+                )
+        except subprocess.CalledProcessError:
+            st.error("Something went wrong while generating the workbook.")
