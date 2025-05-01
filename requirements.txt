@@ -4,4 +4,3 @@ pdfplumber
 openpyxl
 python-docx
 sqlalchemy
-sqlite3
