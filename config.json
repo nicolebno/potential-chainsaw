@@ -1,0 +1,26 @@
+{
+  "branding": {
+    "primary_color": "#266B8E",
+    "secondary_color": "#F2F2F2",
+    "accent_color": "#FFC66C",
+    "neutral_light": "#E7F8F2",
+    "neutral_dark": "#484848",
+    "support_color": "#B7C4C0",
+    "font": "Calibri"
+  },
+  "formats": {
+    "currency": "$#,##0.00",
+    "date": "MM/DD/YYYY"
+  },
+  "defaults": {
+    "logo_included": false,
+    "age_basis": {
+      "current_year": "prior_renewal",
+      "next_year": "renewal"
+    },
+    "contribution": {
+      "apply_to": ["medical", "dental", "vision"],
+      "same_for_all": false
+    }
+  }
+}
