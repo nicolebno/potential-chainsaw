@@ -58,8 +58,7 @@ if st.button("➕ Add Plan"):
         "name": new_plan_name,
         "benefits": plan_data.copy()
     })
-    st.experimental_rerun()
-
+    
 if st.session_state.plans:
     st.markdown("### ✅ Plans Added")
     for p in st.session_state.plans:
