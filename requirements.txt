@@ -1,6 +1,6 @@
 streamlit
 pandas
 pdfplumber
-openpyxl
+openpyxl>=3.1.5
 python-docx
 sqlalchemy
