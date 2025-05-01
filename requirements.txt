@@ -4,3 +4,32 @@ pdfplumber==0.11.5
 openpyxl>=3.1.5
 python-docx
 sqlalchemy
+pyarrow>=7.0
+requests<3,>=2.27
+pillow<12,>=7.1.0
+gitpython!=3.1.19,<4,>=3.0.7
+tenacity<10,>=8.1.0
+packaging<25,>=20
+click<9,>=7.0
+rich<14,>=10.14.0
+pydeck<1,>=0.8.0b4
+watchdog<7,>=2.1.5; platform_system != "Darwin"
+cachetools<6,>=4.0
+altair<6,>=4.0
+toml<2,>=0.10.1
+blinker<2,>=1.0.0
+typing-extensions<5,>=4.3.0
+numpy<3,>=1.20
+protobuf<6,>=3.20
+tornado<7,>=6.0.3
+tzdata>=2022.1
+python-dateutil>=2.8.2
+pytz>=2020.1
+cryptography>=36.0.0
+charset-normalizer>=2.0.0
+pypdfium2>=4.18.0
+et-xmlfile
+lxml>=3.1.0
+greenlet>=1; python_version < "3.14" and (platform_machine == "aarch64" or (platform_machine == "ppc64le" or (platform_machine == "x86_64" or (platform_machine == "amd64" or (platform_machine == "AMD64" or (platform_machine == "win32" or platform_machine == "WIN32"))))))
+pdfminer.six==20250324
+sqlite3  # Explicitly add sqlite3 (though it's often included, it's good to ensure)

@@ -1,127 +1,72 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
-import subprocess
 import json
-from io import BytesIO
-from build_benefit_summary import BENEFIT_ROWS
+from generate_workbook import generate_excel_workbook
+from build_benefit_summary import build_benefit_summary_dataframe
+import os
+import subprocess
 
-# --- Page Setup ---
-st.set_page_config(page_title="Proposal App - Upload & Parse", layout="wide")
-st.title("📂 Proposal App: Upload & Parse Files")
+st.title("Insurance Proposal Workbook Generator")
 
-# Load config
-try:
-    with open("config.json", "r") as f:
-        config = json.load(f)
-except FileNotFoundError:
-    st.warning("config.json not found. Using default styles.")
-    config = {
-        "branding": {"primary_color": "#266B8E", "font": "Calibri"},
-        "formats": {"currency": "$#,##0.00", "date": "MM/DD/YYYY"},
-        "defaults": {}
-    }
+census_file = st.file_uploader("Upload Census Data (Excel)", type=["xlsx"])
+rates_file = st.file_uploader("Upload Rates Data (Excel)", type=["xlsx"])
+benefit_summary_pdf = st.file_uploader("Upload Benefit Summary (PDF)", type=["pdf"])
 
-# Streamlit inputs for contribution modeling
-contrib_type = st.selectbox("Contribution Type", ["flat", "percent"])
-contrib_employee = st.number_input("Employer Share for Employee", min_value=0.0, value=500.0)
-contrib_dependent = st.number_input("Employer Share for Dependents", min_value=0.0, value=250.0)
+st.subheader("OR Enter Benefit Summary as JSON")
+benefit_summary_text = st.text_area("Benefit Summary (JSON)", '[\n  {"Plan": "Plan A"}, \n  {"Plan": "Plan B"}\n]')
 
-# Access branding values
-BRAND = config["branding"]
-FORMATS = config["formats"]
-PRIMARY_COLOR = BRAND.get("primary_color", "#266B8E")
-CURRENCY_FORMAT = FORMATS.get("currency", "$#,##0.00")
-DATE_FORMAT = FORMATS.get("date", "MM/DD/YYYY")
-FONT = BRAND.get("font", "Calibri")
-
-st.markdown(f"<style>body {{ font-family: {FONT}; }}</style>", unsafe_allow_html=True)
-
-# --- File Upload Slots ---
-census_file = st.file_uploader("Upload Census File (.xlsx or .csv)", type=["xlsx", "csv"])
-rate_file = st.file_uploader("Upload Current Rates (.xlsx only)", type=["xlsx"])
-renewal_rate_file = st.file_uploader("Upload Renewal Rates (.xlsx only)", type=["xlsx"])
-benefit_summary = st.file_uploader("Upload Benefit Summary (.pdf)", type=["pdf"])
-
-# --- Dynamic Plan Inputs ---
-st.subheader("🩺 Enter Plan Design Summaries")
-if "plans" not in st.session_state:
-    st.session_state.plans = []
-
-new_plan_name = st.text_input("Plan Name")
-plan_data = {}
-for item in BENEFIT_ROWS:
-    plan_data[item] = st.text_input(f"{item}", key=f"{item}_{new_plan_name}")
-
-if st.button("➕ Add Plan"):
-    st.session_state.plans.append({
-        "name": new_plan_name,
-        "benefits": plan_data.copy()
-    })
-    
-if st.session_state.plans:
-    st.markdown("### ✅ Plans Added")
-    for p in st.session_state.plans:
-        st.markdown(f"- **{p['name']}**")
-
-# --- Preview Outputs ---
-def parse_census(file):
+benefit_summary_data = []
+if benefit_summary_pdf:
+    benefit_df = build_benefit_summary_dataframe(benefit_summary_pdf)
+    if not benefit_df.empty:
+        benefit_summary_data = benefit_df.to_dict(orient='records')
+    else:
+        st.warning("Could not extract benefit summary from PDF.")
+elif benefit_summary_text:
     try:
-        if file.name.endswith(".csv"):
-            df = pd.read_csv(file)
-        else:
-            df = pd.read_excel(file)
-        return df.head()
-    except Exception as e:
-        return f"❌ Error parsing census: {e}"
+        benefit_summary_data = json.loads(benefit_summary_text)
+        if not isinstance(benefit_summary_data, list):
+            st.error("Benefit Summary must be a JSON list of dictionaries.")
+            benefit_summary_data = []
+    except json.JSONDecodeError:
+        st.error("Invalid JSON format for Benefit Summary.")
+        benefit_summary_data = []
 
-def parse_rate_sheet(file):
-    try:
-        df = pd.read_excel(file, header=None)
-        return df.head(10)
-    except Exception as e:
-        return f"❌ Error parsing rate sheet: {e}"
+if census_file and rates_file and benefit_summary_data:
+    if st.button("Generate Workbook"):
+        with st.spinner("Generating Excel Workbook..."):
+            workbook = generate_excel_workbook(census_file, rates_file, benefit_summary_data)
+            if workbook:
+                try:
+                    # Save the workbook to a BytesIO object for download
+                    from io import BytesIO
+                    buffer = BytesIO()
+                    workbook.save(buffer)
+                    buffer.seek(0)
 
-def parse_benefit_summary(file):
-    try:
-        with pdfplumber.open(file) as pdf:
-            return f"✅ Parsed PDF: {len(pdf.pages)} pages\nSample text: {pdf.pages[0].extract_text()[:200]}"
-    except Exception as e:
-        return f"❌ Error parsing PDF: {e}"
+                    st.download_button(
+                        label="Download Excel Workbook",
+                        data=buffer,
+                        file_name="financial_proposal_workbook.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    st.success("Workbook generated and ready for download!")
+                except Exception as e:
+                    st.error(f"Error during download: {e}")
 
-if census_file:
-    st.subheader("👥 Census Preview")
-    st.write(parse_census(census_file))
-
-if rate_file:
-    st.subheader("📊 Rate Sheet Preview")
-    st.write(parse_rate_sheet(rate_file))
-
-if benefit_summary:
-    st.subheader("📄 Benefit Summary Info")
-    st.write(parse_benefit_summary(benefit_summary))
-
-# --- Trigger Workbook Generation ---
-if census_file and rate_file and renewal_rate_file and benefit_summary:
-    if st.button("🚀 Generate Proposal Workbook"):
+# Example of running a subprocess (as seen in your logs)
+st.subheader("Run Subprocess (Example - Adapt as needed)")
+command_to_run = st.text_input("Enter command to run:", "")
+if st.button("Run Command"):
+    if command_to_run:
         try:
-            with open("plans.json", "w") as f:
-                json.dump(st.session_state.plans, f)
-
-            subprocess.run([
-                "python", "generate_workbook.py",
-                contrib_type,
-                str(contrib_employee),
-                str(contrib_dependent)
-            ], check=True)
-
-            st.success("Workbook generated successfully!")
-            with open("financial_summary_output.xlsx", "rb") as f:
-                st.download_button(
-                    "📤 Download Finished Proposal Workbook",
-                    f,
-                    file_name="Proposal.xlsx",
-                    key="proposal_download"
-                )
-        except subprocess.CalledProcessError:
-            st.error("Something went wrong while generating the workbook.")
+            result = subprocess.run(command_to_run, shell=True, capture_output=True, text=True, check=True)
+            st.success(f"Command executed successfully:\n{result.stdout}")
+            if result.stderr:
+                st.warning(f"Command had errors/warnings:\n{result.stderr}")
+        except subprocess.CalledProcessError as e:
+            st.error(f"Error executing command: {e}")
+        except FileNotFoundError:
+            st.error(f"Command not found: {command_to_run}")
+        except Exception as e:
+            st.error(f"An unexpected error occurred: {e}")

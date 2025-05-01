@@ -1,286 +1,115 @@
-import json
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 import pandas as pd
-import sys
-from datetime import datetime
+from openpyxl import Workbook
+from openpyxl.styles import Font, Fill, PatternFill, Alignment
+from openpyxl.utils.dataframe import dataframe_to_rows
+import json
+import streamlit as st
+import os
 
-# --- Load Config ---
-with open("config.json", "r") as f:
-    config = json.load(f)
+# Load configuration
+try:
+    with open("config.json", "r") as f:
+        config = json.load(f)
+    PRIMARY_COLOR = config.get("primary_color", "blue")
+    HEADER_FILL = PatternFill(start_color=config.get("header_fill_color", "DDDDDD"),
+                               end_color=config.get("header_fill_color", "DDDDDD"),
+                               fill_type="solid")
+    HEADER_FONT = Font(bold=True, color=config.get("header_font_color", "000000"))
+    ALIGNMENT = Alignment(horizontal='center', vertical='center', wrap_text=True)
+except FileNotFoundError:
+    PRIMARY_COLOR = "blue"
+    HEADER_FILL = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+    HEADER_FONT = Font(bold=True, color="000000")
+    ALIGNMENT = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    st.error("config.json not found. Using default styling.")
 
-BRAND = config["branding"]
-FORMATS = config["formats"]
+def format_header(cell):
+    cell.fill = HEADER_FILL
+    cell.font = HEADER_FONT
+    cell.alignment = ALIGNMENT
 
-# --- Style Settings ---
-PRIMARY_COLOR = BRAND["primary_color"].replace("#", "")
-FONT_NAME = BRAND["font"]
-CURRENCY_FORMAT = FORMATS["currency"]
-DATE_FORMAT = FORMATS["date"]
+def create_financial_summary(census_df, rates_df, benefit_summary):
+    """
+    Creates the financial summary DataFrame.
+    """
+    summary_df = pd.DataFrame()
+    summary_df['Plan'] = benefit_summary['Plan']
+    summary_df['Employee Count'] = census_df.groupby('Plan')['Employee'].count().reindex(benefit_summary['Plan'], fill_value=0)
+    summary_df = pd.merge(summary_df, rates_df, on='Plan', how='left')
+    summary_df['Total Premium'] = summary_df['Employee Count'] * summary_df['Rate']
+    return summary_df
 
-# --- Predefined Styles ---
-header_fill = PatternFill(start_color=PRIMARY_COLOR, end_color=PRIMARY_COLOR, fill_type="solid")
-header_font = Font(color="FFFFFF", bold=True, name=FONT_NAME)
-center_align = Alignment(horizontal="center", vertical="center")
-thin_border = Border(
-    left=Side(style="thin"),
-    right=Side(style="thin"),
-    top=Side(style="thin"),
-    bottom=Side(style="thin")
-)
+def generate_excel_workbook(census_file, rates_file, benefit_summary_data):
+    """
+    Generates an Excel workbook with census data, rates, and financial summary.
+    """
+    try:
+        census_df = pd.read_excel(census_file)
+        rates_df = pd.read_excel(rates_file)
+        benefit_summary = pd.DataFrame(benefit_summary_data)
 
-# --- Load Data ---
-census_df = pd.read_excel("uploaded_census.xlsx")
-rate_df = pd.read_excel("uploaded_rates.xlsx", header=0)
-renewal_df = pd.read_excel("uploaded_renewal_rates.xlsx", header=0)
+        workbook = Workbook()
 
-# Clean headers
-rate_df.columns = rate_df.columns.astype(str)
-renewal_df.columns = renewal_df.columns.astype(str)
-age_column = rate_df.columns[0]
-plan_columns = rate_df.columns[1:]
-renewal_plan_columns = renewal_df.columns[1:]
+        # Sheet 1: Census Data
+        census_sheet = workbook.active
+        census_sheet.title = "Census Data"
+        for r_idx, row in enumerate(dataframe_to_rows(census_df, header=True, index=False)):
+            census_sheet.append(row)
+            if r_idx == 0:
+                for cell in census_sheet[1]:
+                    format_header(cell)
 
-# Build current rate lookup
-rate_lookup = {}
-for plan in plan_columns:
-    plan_rates = {}
-    for _, row in rate_df.iterrows():
+        # Sheet 2: Rates Data
+        rates_sheet = workbook.create_sheet(title="Rates Data")
+        for r_idx, row in enumerate(dataframe_to_rows(rates_df, header=True, index=False)):
+            rates_sheet.append(row)
+            if r_idx == 0:
+                for cell in rates_sheet[1]:
+                    format_header(cell)
+
+        # Sheet 3: Benefit Summary
+        summary_sheet = workbook.create_sheet(title="Benefit Summary")
+        for r_idx, row in enumerate(dataframe_to_rows(benefit_summary, header=True, index=False)):
+            summary_sheet.append(row)
+            if r_idx == 0:
+                for cell in summary_sheet[1]:
+                    format_header(cell)
+
+        # Sheet 4: Financial Summary
+        financial_summary_df = create_financial_summary(census_df, rates_df, benefit_summary)
+        financial_sheet = workbook.create_sheet(title="Financial Summary")
+        for r_idx, row in enumerate(dataframe_to_rows(financial_summary_df, header=True, index=False)):
+            financial_sheet.append(row)
+            if r_idx == 0:
+                for cell in financial_sheet[1]:
+                    format_header(cell)
+
+        return workbook
+    except FileNotFoundError as e:
+        st.error(f"Error: One of the uploaded files was not found. {e}")
+        return None
+    except Exception as e:
+        st.error(f"An error occurred during workbook generation: {e}")
+        return None
+
+if __name__ == "__main__":
+    st.title("Excel Workbook Generator")
+
+    census_file = st.file_uploader("Upload Census Data (Excel)", type=["xlsx"])
+    rates_file = st.file_uploader("Upload Rates Data (Excel)", type=["xlsx"])
+    benefit_summary_text = st.text_area("Enter Benefit Summary (JSON)", '[\n  {"Plan": "Plan A"}, \n  {"Plan": "Plan B"}\n]')
+
+    if census_file and rates_file and benefit_summary_text:
         try:
-            age = int(row[age_column])
-            rate = row[plan]
-            plan_rates[age] = rate
-        except (ValueError, TypeError):
-            continue
-    rate_lookup[plan] = plan_rates
-
-# Build renewal rate lookup
-renewal_lookup = {}
-for plan in renewal_plan_columns:
-    plan_rates = {}
-    for _, row in renewal_df.iterrows():
-        try:
-            age = int(row[age_column])
-            rate = row[plan]
-            plan_rates[age] = rate
-        except (ValueError, TypeError):
-            continue
-    renewal_lookup[plan] = plan_rates
-
-# --- Calculate Age and Assign Rates ---
-renewal_date = datetime(2025, 5, 1)
-census_df['DOB'] = pd.to_datetime(census_df['DOB'], errors='coerce')
-census_df['Age at Renewal'] = census_df['DOB'].apply(
-    lambda dob: renewal_date.year - dob.year - ((renewal_date.month, renewal_date.day) < (dob.month, dob.day))
-    if pd.notnull(dob) else None
-)
-
-# Ensure a Plan column exists
-if 'Plan' not in census_df.columns:
-    selected_plan = next(iter(rate_lookup))
-    census_df['Plan'] = selected_plan
-
-# Identify subscribers
-tiers = []
-subscriber_id = None
-for _, row in census_df.iterrows():
-    if row['Status'] == 'EE':
-        subscriber_id = row.name
-    tiers.append(subscriber_id)
-
-census_df['SubscriberID'] = tiers
-
-# Assign current and renewal rates per person
-census_df['Current Rate'] = census_df.apply(
-    lambda row: rate_lookup.get(row['Plan'], {}).get(row['Age at Renewal'], None), axis=1
-)
-census_df['Renewal Rate'] = census_df.apply(
-    lambda row: renewal_lookup.get(row['Plan'], {}).get(row['Age at Renewal'], None), axis=1
-)
-
-
-# Contribution Options
-contrib_type = sys.argv[1] if len(sys.argv) > 1 else "flat"
-contrib_employee = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0
-contrib_dependent = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
-
-CONTRIB_MODEL = {
-    "type": contrib_type,
-    "employee": contrib_employee,
-    "dependent": contrib_dependent
-}
-
-
-
-# Group by Subscriber and calculate contributions
-def apply_contribution(group):
-    group = group.copy()
-    total_rate = group['Current Rate'].sum()
-    subscriber = group.iloc[0]
-    n_dependents = len(group) - 1
-
-    if CONTRIB_MODEL['type'] == 'flat':
-        er_share = CONTRIB_MODEL['employee'] + (n_dependents * CONTRIB_MODEL['dependent'])
-    elif CONTRIB_MODEL['type'] == 'percent':
-        er_share = subscriber['Current Rate'] * (CONTRIB_MODEL['employee'] / 100.0)
-        if n_dependents > 0:
-            dep_rates = group.iloc[1:]['Current Rate'].sum()
-            er_share += dep_rates * (CONTRIB_MODEL['dependent'] / 100.0)
-    else:
-        er_share = 0
-
-    group.loc[:, 'Employer Share'] = er_share
-    group.loc[:, 'Employee Share'] = total_rate - er_share
-    return group
-
-census_df = census_df.groupby('SubscriberID').apply(apply_contribution)
-census_df.reset_index(drop=True, inplace=True)
-census_df.index = range(len(census_df))
-
-# Flag rows with no matches for debug output
-census_df['Rate Match'] = census_df.apply(
-    lambda row: "✅" if pd.notna(row['Current Rate']) and pd.notna(row['Renewal Rate']) else "❌", axis=1
-)
-
-# Clean and group
-census_df['Current Rate'] = pd.to_numeric(census_df['Current Rate'], errors='coerce')
-census_df['Renewal Rate'] = pd.to_numeric(census_df['Renewal Rate'], errors='coerce')
-census_df['Employer Share'] = pd.to_numeric(census_df['Employer Share'], errors='coerce')
-census_df['Employee Share'] = pd.to_numeric(census_df['Employee Share'], errors='coerce')
-
-# --- Group by plan and age ---
-grouped = census_df[census_df['Rate Match'] == '✅'].groupby(['Plan', 'Age at Renewal']).agg(
-    Count=('Current Rate', 'size'),
-    Current_Rate=('Current Rate', 'first'),
-    Renewal_Rate=('Renewal Rate', 'first'),
-    ER_Total=('Employer Share', 'sum'),
-    EE_Total=('Employee Share', 'sum')
-).reset_index()
-
-grouped['Monthly Current'] = grouped['Count'] * grouped['Current_Rate']
-grouped['Monthly Renewal'] = grouped['Count'] * grouped['Renewal_Rate']
-grouped['$ Increase'] = grouped['Monthly Renewal'] - grouped['Monthly Current']
-grouped['% Increase'] = grouped.apply(
-    lambda row: ((row['Monthly Renewal'] - row['Monthly Current']) / row['Monthly Current']) if row['Monthly Current'] != 0 else None, axis=1
-)
-
-# --- Create Workbook ---
-wb = Workbook()
-ws = wb.active
-ws.title = "Financial Summary"
-
-headers = [
-    "Plan Name", "Age Band", "Count", "Current Rate", "Renewal Rate",
-    "Monthly Current", "Monthly Renewal", "$ Increase", "% Increase",
-    "Employer Share", "Employee Share"
-]
-
-for col, text in enumerate(headers, start=1):
-    cell = ws.cell(row=1, column=col, value=text)
-    cell.fill = header_fill
-    cell.font = header_font
-    cell.alignment = center_align
-    cell.border = thin_border
-
-for idx, row in grouped.iterrows():
-    ws.cell(row=idx+2, column=1, value=row['Plan'])
-    ws.cell(row=idx+2, column=2, value=row['Age at Renewal'])
-    ws.cell(row=idx+2, column=3, value=row['Count'])
-    ws.cell(row=idx+2, column=4, value=row['Current_Rate'])
-    ws.cell(row=idx+2, column=5, value=row['Renewal_Rate'])
-    ws.cell(row=idx+2, column=6, value=row['Monthly Current']).number_format = CURRENCY_FORMAT
-    ws.cell(row=idx+2, column=7, value=row['Monthly Renewal']).number_format = CURRENCY_FORMAT
-    ws.cell(row=idx+2, column=8, value=row['$ Increase']).number_format = CURRENCY_FORMAT
-    ws.cell(row=idx+2, column=9, value=row['% Increase']).number_format = "0.00%"
-    ws.cell(row=idx+2, column=10, value=row['ER_Total']).number_format = CURRENCY_FORMAT
-    ws.cell(row=idx+2, column=11, value=row['EE_Total']).number_format = CURRENCY_FORMAT
-
-# --- Total Row ---
-total_row = len(grouped) + 2
-ws.cell(row=total_row, column=1, value="Total")
-ws.cell(row=total_row, column=3, value=grouped['Count'].sum())
-ws.cell(row=total_row, column=6, value=grouped['Monthly Current'].sum()).number_format = CURRENCY_FORMAT
-ws.cell(row=total_row, column=7, value=grouped['Monthly Renewal'].sum()).number_format = CURRENCY_FORMAT
-ws.cell(row=total_row, column=8, value=grouped['$ Increase'].sum()).number_format = CURRENCY_FORMAT
-ws.cell(row=total_row, column=9, value=(grouped['$ Increase'].sum() / grouped['Monthly Current'].sum())).number_format = "0.00%"
-ws.cell(row=total_row, column=10, value=grouped['ER_Total'].sum()).number_format = CURRENCY_FORMAT
-ws.cell(row=total_row, column=11, value=grouped['EE_Total'].sum()).number_format = CURRENCY_FORMAT
-
-# --- Debug Tab ---
-debug_ws = wb.create_sheet(title="Debug")
-debug_headers = [
-    "First Name", "Last Name", "DOB", "Age at Renewal", "Plan", "Status",
-    "Current Rate", "Renewal Rate", "Rate Match", "Employer Share", "Employee Share"
-]
-
-for col, text in enumerate(debug_headers, start=1):
-    cell = debug_ws.cell(row=1, column=col, value=text)
-    cell.fill = header_fill
-    cell.font = header_font
-    cell.alignment = center_align
-    cell.border = thin_border
-
-for idx, row in census_df.iterrows():
-    debug_ws.cell(row=idx+2, column=1, value=row.get("First Name"))
-    debug_ws.cell(row=idx+2, column=2, value=row.get("Last Name"))
-    debug_ws.cell(row=idx+2, column=3, value=row.get("DOB"))
-    debug_ws.cell(row=idx+2, column=4, value=row.get("Age at Renewal"))
-    debug_ws.cell(row=idx+2, column=5, value=row.get("Plan"))
-    debug_ws.cell(row=idx+2, column=6, value=row.get("Status"))
-    debug_ws.cell(row=idx+2, column=7, value=row.get("Current Rate"))
-    debug_ws.cell(row=idx+2, column=8, value=row.get("Renewal Rate"))
-    debug_ws.cell(row=idx+2, column=9, value=row.get("Rate Match"))
-    debug_ws.cell(row=idx+2, column=10, value=row.get("Employer Share"))
-    debug_ws.cell(row=idx+2, column=11, value=row.get("Employee Share"))
-
-from build_benefit_summary import build_benefit_summary
-
-# Dummy plan data to test layout
-plans = [
-    {
-        "name": "Current Plan",
-        "benefits": {
-            "Deductible (Individual)": "$500",
-            "Deductible (Family)": "$1,000",
-            "Out-of-Pocket Max (Individual)": "$3,000",
-            "Out-of-Pocket Max (Family)": "$6,000",
-            "PCP Visit": "$25",
-            "Specialist Visit": "$40",
-            "Urgent Care": "$50",
-            "Emergency Room": "$300",
-            "Generic Rx": "$10",
-            "Brand Rx": "$35",
-            "Specialty Rx": "$100",
-            "Hospitalization": "$500/day",
-            "Mental Health": "$25",
-            "Telehealth": "$0"
-        }
-    },
-    {
-        "name": "Option 1",
-        "benefits": {
-            "Deductible (Individual)": "$750",
-            "Deductible (Family)": "$1,500",
-            "Out-of-Pocket Max (Individual)": "$4,000",
-            "Out-of-Pocket Max (Family)": "$8,000",
-            "PCP Visit": "$30",
-            "Specialist Visit": "$45",
-            "Urgent Care": "$60",
-            "Emergency Room": "$350",
-            "Generic Rx": "$15",
-            "Brand Rx": "$40",
-            "Specialty Rx": "$120",
-            "Hospitalization": "$600/day",
-            "Mental Health": "$30",
-            "Telehealth": "$10"
-        }
-    }
-]
-
-# Create benefit summary worksheet
-benefit_ws = wb.create_sheet(title="Benefit Summary")
-build_benefit_summary(benefit_ws, plans)
-
-
-# --- Save File ---
-wb.save("financial_summary_output.xlsx")
+            benefit_summary_data = json.loads(benefit_summary_text)
+            if not isinstance(benefit_summary_data, list):
+                st.error("Benefit Summary must be a JSON list of dictionaries.")
+            else:
+                workbook = generate_excel_workbook(census_file, rates_file, benefit_summary_data)
+                if workbook:
+                    st.success("Excel workbook generated successfully!")
+                    # Placeholder for download button in a Streamlit context
+                    # To be used within the Streamlit app (newapp.py)
+                    pass
+        except json.JSONDecodeError:
+            st.error("Invalid JSON format for Benefit Summary.")
